@@ -6,12 +6,8 @@ ChatSOC-Guard は、簡易チャットサービスを題材に、
 - Web 側：匿名チャット + 投稿制御
 - Runner 側：ログ監視 + リスク検知 + Discord 通知
 
-## デモ概要
-
-1. `/chat` にアクセスして匿名チャットが動く  
-2. 連続投稿で `429 rate_limited` → 一時ブロック  
-3. `logs/app.jsonl` にセキュリティイベントが追記される  
-4. Runner がログを監視し、Discord に通知する  
+## ドキュメント
+- [Design Notes / 開発メモ](./DESIGN_NOTES.md)
 
 ## 背景・動機
 
@@ -50,7 +46,7 @@ ChatSOC-Guard は、簡易チャットサービスを題材に、
 - Redisを用いたレート制限・一時BAN  
 - 匿名ID（Cookie）によるオープンチャット識別  
 - セキュリティイベントの構造化ログ出力  
-- CSRF対策（Cookie + ヘッダトークン照合
+- CSRF対策（Cookie + ヘッダトークン照合)
 - SOC runner によるリアルタイム監視  
 - Discord Webhook 通知  
 - ユーザーメンションによるDiscordの通知荒らしを防止
@@ -119,7 +115,7 @@ Discord の Webhook URL（SOC 通知用）
 
 ---
 
-### 2. Webサーバ起動（FastAPI）
+### 2. Webサーバ起動（FastAPI + Redis）
 
 Webサーバ起動：
 
