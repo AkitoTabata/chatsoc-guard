@@ -1,0 +1,296 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Chat</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .box {
+      border: 1px solid #ddd;
+      padding: 12px;
+      height: 360px;
+      overflow: auto;
+      background: #fafafa;
+    }
+
+    .msg {
+      margin: 6px 0;
+    }
+
+    .me {
+      font-weight: bold;
+    }
+
+    .meta {
+      color: #666;
+      font-size: 12px;
+    }
+
+    form {
+      margin: 10px 0;
+    }
+
+    input[type=text] {
+      width: 70%;
+      padding: 8px;
+    }
+
+    button {
+      padding: 8px 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="top">
+    <div>
+      <h1>Chat</h1>
+      {% if error == "blocked" %}
+      <p style="color:red">You are temporarily blocked.</p>
+      {% elif error == "rate_limited" %}
+      <p style="color:red">Too many messages. Temporary block applied.</p>
+      {% elif error == "high_risk_block" %}
+      <p style="color:red">Suspicious activity detected. Posting is temporarily restricted.</p>
+      {% elif error == "too_long" %}
+      <p style="color:red">Message is too long. Please keep it under the limit.</p>
+      {% elif error == "csrf_failed" %}
+      <p style="color:red">CSRF check failed. Please reload.</p>
+      {% endif %}
+
+
+      <div class="meta">Login user: <b>{{ user }}</b></div>
+    </div>
+  </div>
+
+  <div class="box" id="chatBox">
+    {% for m in messages %}
+    <div class="msg" data-id="{{ m.id }}">
+      <span class="me">{{ m.user }}</span>: {{ m.text }}
+      <span class="meta">(#{{ m.id }})</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div id="errorBanner"
+    style="display:none; background:#ffe5e5; border:1px solid #ff9a9a; padding:10px; margin:10px 0;">
+    <span id="errorText"></span>
+  </div>
+
+  <form method="post" action="/chat/post" id="postForm">
+    <input name="text" id="textInput" type="text" placeholder="Type a message..." autocomplete="off" autofocus />
+    <button type="submit">Send</button>
+  </form>
+
+  <div class="meta">
+    Auto refresh: every 3s (poll). Last ID: <span id="lastId">{{ last_id }}</span>
+  </div>
+
+  <script>
+    let lastId = Number(document.getElementById("lastId").innerText || "0");
+    const box = document.getElementById("chatBox");
+    const input = document.getElementById("textInput");
+
+    function getCookie(name) {
+      const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+      return m ? decodeURIComponent(m[2]) : "";
+    }
+
+    function appendMessage(m) {
+      const div = document.createElement("div");
+      div.className = "msg";
+      div.dataset.id = m.id;
+
+      const name = document.createElement("span");
+      name.className = "me";
+      name.textContent = String(m.user);
+
+      const sep = document.createTextNode(": ");
+
+      const text = document.createElement("span");
+      text.textContent = String(m.text);
+
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = `(#${m.id})`;
+
+      div.appendChild(name);
+      div.appendChild(sep);
+      div.appendChild(text);
+      div.appendChild(document.createTextNode(" "));
+      div.appendChild(meta);
+
+      box.appendChild(div);
+    }
+
+    /*
+        function escapeHtml(s) {
+          return String(s)
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+        }
+    */
+    async function poll() {
+      try {
+        const res = await fetch(`/chat/poll?after=${lastId}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const msgs = data.messages || [];
+        if (msgs.length > 0) {
+          for (const m of msgs) {
+            appendMessage(m);
+            lastId = Math.max(lastId, m.id);
+          }
+          document.getElementById("lastId").innerText = String(lastId);
+          box.scrollTop = box.scrollHeight;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    // 最初に一番下へ
+    box.scrollTop = box.scrollHeight;
+
+    // 3秒ごとに新着チェック
+    setInterval(poll, 3000);
+
+    // 送信後は入力欄を空に（リロードが走るので保険）
+    document.getElementById("postForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+
+      const body = new URLSearchParams();
+      body.set("text", text);
+
+      const res = await fetch("/chat/post", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "fetch",
+          "X-CSRF-Token": getCookie("csrf_token"),
+        },
+        body,
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const code = data.error || `http_${res.status}`;
+
+        // block系（秒数カウントがあるやつ）
+        if (code === "blocked" || code === "rate_limited") {
+          const sec = Number(data.block_sec || 0);
+          const baseMsg =
+            code === "blocked"
+              ? "You are temporarily blocked."
+              : "Too many messages. Temporary block applied.";
+          showError(code, sec);          // まず表示
+          startCountdown(baseMsg, sec);  // ここで減っていく + 0になったら消える
+        }
+        // 追加：too_long は max を表示
+        else if (code === "too_long") {
+          const max = Number(data.max || 0);
+          showError("too_long", max);
+        }
+        // high risk
+        else if (code === "high_risk_block") {
+          showError("high_risk_block", 0);
+        }
+        // csrf
+        else if (code === "csrf_missing") {
+          showError("csrf_missing", 0);
+        }
+        // その他
+        else {
+          showError(code, 0);
+        }
+
+        input.value = "";
+        input.focus();
+        return;
+      }
+
+      // 成功
+      input.value = "";
+      input.focus();
+      await poll();
+    });
+
+
+    window.addEventListener("load", () => {
+      input.focus();
+    });
+
+    let countdownTimer = null;
+
+    function showError(code, n) {
+      if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+      const banner = document.getElementById("errorBanner");
+      const textEl = document.getElementById("errorText");
+
+      let msg = "Error";
+
+      if (code === "blocked") {
+        msg = `You are temporarily blocked. (${n}s)`;
+      } else if (code === "rate_limited") {
+        msg = `Too many messages. Temporary block applied. (${n}s)`;
+      } else if (code === "too_long") {
+        msg = `Message is too long. Max ${n} chars.`;
+      } else if (code === "high_risk_block") {
+        msg = "Suspicious activity detected. Posting is temporarily restricted.";
+      } else if (code === "csrf_missing") {
+        msg = "Request blocked (CSRF check). Reload the page and try again.";
+      } else if (code === "csrf_failed") {
+        textEl.textContent = "CSRF check failed. Please reload the page.";
+      } else {
+        msg = `Error: ${code}`;
+      }
+
+      textEl.textContent = msg;
+      banner.style.display = "block";
+    }
+
+    function startCountdown(baseMsg, sec) {
+      if (countdownTimer) clearInterval(countdownTimer);
+      let remain = sec;
+
+      countdownTimer = setInterval(() => {
+        remain -= 1;
+        const banner = document.getElementById("errorBanner");
+        const textEl = document.getElementById("errorText");
+
+        if (remain <= 0) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+          banner.style.display = "none";
+          return;
+        }
+        textEl.textContent = `${baseMsg} (${remain}s)`;
+      }, 1000);
+    }
+
+
+
+
+  </script>
+</body>
+
+</html>
